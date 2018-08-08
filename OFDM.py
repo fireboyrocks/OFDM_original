@@ -1,6 +1,8 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy
+from scipy import interpolate
 
 """
 System Parameters decription
@@ -82,7 +84,7 @@ channelResponse = np.array([1, 0, 0.3+0.3j]) # the impulse response of the wirel
 H_exact = np.fft.fft(channelResponse,K)
 plt.figure(3)
 plt.plot(allCarriers, abs(H_exact))
-SNRdb = 25 # signal to noise-ratio in dB at the Rx
+SNRdb = 10 # signal to noise-ratio in dB at the Rx
 
 
 
@@ -193,7 +195,94 @@ OFDM_demod = DFT(OFDM_RX_noCP)
 
 
 
+"""
+Channel estimation
+"""
+def channelEstimate(OFDM_demod):
+    pilots = OFDM_demod[pilotCarriers] # extract the pilot values from the Rx signal
+    Hest_at_pilots = pilots/pilotValue # divide by the transmitted pilot values
+
+    # Perform interpolation between the pilot carriers to get an estimate
+    # of the channel in the data carriers. Here, we interpolate absolute value and phase 
+    # separately    
+    Hest_abs = scipy.interpolate.interp1d(pilotCarriers, abs(Hest_at_pilots), kind = 'linear')(allCarriers)
+    Hest_phase = scipy.interpolate.interp1d(pilotCarriers, np.angle(Hest_at_pilots), kind = 'linear')(allCarriers)
+    Hest = Hest_abs * np.exp(1j*Hest_phase)
     
+    plt.figure(6)
+    plt.plot(allCarriers, abs(H_exact), label='Correct Channel')
+    plt.stem(pilotCarriers, abs(Hest_at_pilots), label='Pilot estimates')
+    plt.plot(allCarriers, abs(Hest), label='Estimated channel via interpolation')
+    plt.grid(True); plt.xlabel('Carrier index'); plt.ylabel('$|H(f)|$'); plt.legend(fontsize=10)
+    plt.ylim(0,2)
+    
+    return Hest
+Hest = channelEstimate(OFDM_demod)    
+
+    
+
+"""
+define the equalizer -Here we are using ZF equalizer
+"""
+def equalizer(OFDM_demod, Hest):
+    return OFDM_demod/Hest
+equalized_Hest = equalizer(OFDM_demod, Hest)
+
+
+
+"""
+extract the useful info
+"""
+def get_payload(equalized):
+    return equalized[dataCarriers]
+QAM_est = get_payload(equalized_Hest)
+plt.figure(7)
+plt.plot(QAM_est.real, QAM_est.imag, 'bo')
+
+
+
+"""
+demapping
+"""
+def Demapping(QAM):
+    # array of possible constellation points
+    constellation = np.array([x for x in demapping_table.keys()])
+    
+    # calculate distance of each RX point to each possible point
+    dists = abs(QAM.reshape((-1,1)) - constellation.reshape((1,-1)))
+    
+    # for each element in QAM, choose the index in constellation 
+    # that belongs to the nearest constellation point
+    const_index = dists.argmin(axis=1)
+    
+    # get back the real constellation point
+    hardDecision = constellation[const_index]
+    
+    # transform the constellation point into the bit groups
+    return np.vstack([demapping_table[C] for C in hardDecision]), hardDecision
+
+PS_est, hardDecision = Demapping(QAM_est)
+for qam, hard in zip(QAM_est, hardDecision):
+    plt.plot([qam.real, hard.real], [qam.imag, hard.imag], 'b-o');
+    plt.plot(hardDecision.real, hardDecision.imag, 'ro')
+    
+    
+
+"""
+P/S conversion
+"""
+def PS(bits):
+    return bits.reshape((-1,))
+bits_est = PS(PS_est)
+
+
+"""
+BER
+"""
+print ("Obtained Bit error rate: ", np.sum(abs(bits-bits_est))/len(bits))
+
+
+
 
 
 
